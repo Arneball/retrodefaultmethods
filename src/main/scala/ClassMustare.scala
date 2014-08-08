@@ -63,9 +63,9 @@ object DefaultMethod {
 }
 object InstructorExtractor {
   val (loadMap, returnMap) = {
-    val types = List(INT_TYPE,  LONG_TYPE, FLOAT_TYPE, DOUBLE_TYPE)
-    val loads = List(ILOAD,     LLOAD,     FLOAD,      DLOAD)
-    val rets  = List(IRETURN,   LRETURN,   FRETURN,    DRETURN)
+    val types = List(INT_TYPE,  LONG_TYPE, FLOAT_TYPE, DOUBLE_TYPE, VOID_TYPE)
+    val loads = List(ILOAD,     LLOAD,     FLOAD,      DLOAD, -1) // omg a null
+    val rets  = List(IRETURN,   LRETURN,   FRETURN,    DRETURN, RETURN)
     val mkMap = types.zip(_: List[Int]).toMap
     mkMap(loads) -> mkMap(rets)
   }
