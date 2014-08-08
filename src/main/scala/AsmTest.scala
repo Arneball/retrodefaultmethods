@@ -12,7 +12,7 @@ import collection.JavaConversions._
 object AsmTest {
   lazy val (output: Path, cp: Array[URL], input: Path, bytecodeVersion: Int, ucl: URLClassLoader) = {
     val List(_input, _output, _cp, _bytecode) = List("inputDir", "outputDir", "classpath", "bytecodeVersion").map{ name =>
-      System.getProperties.getProperty("neger." + name)
+      System.getProperties.getProperty("retrometh." + name)
     }
     val byteCodeVersion = _bytecode match {
       case "1.7" | "7" | "51" => Opcodes.V1_7
@@ -63,20 +63,4 @@ object Implicits {
     }
     def getInternalClass = AsmTest.ucl.loadClass(str.replace("/", "."))
   }
-}
-import Implicits._
-import org.kohsuke.asm5.Opcodes._
-
-class InterfaceToHelperRewriter(mv: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, mv) {
-  override def visitMethodInsn(opcode: Int, owner: String, name: String, desc: String, itf: Boolean) = opcode match {
-    case INVOKESPECIAL if owner.getInternalClass.isInterface =>
-      println(s"Messing up $owner $name $desc")
-      super.visitMethodInsn(INVOKESTATIC, owner + "helper", name, desc.addParam(owner), itf)
-    case _ =>
-      super.visitMethodInsn(opcode, owner, name, desc, itf)
-  }
-}
-
-object DefaultMethod {
-  def unapply(m: Method) = !Modifier.isAbstract(m.getModifiers)
 }

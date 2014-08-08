@@ -69,3 +69,13 @@ class BodyStripper(newMethod: MethodVisitor) extends MethodVisitor(Opcodes.ASM5,
     super.visitEnd()
   }
 }
+
+class InterfaceToHelperRewriter(mv: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, mv) {
+  override def visitMethodInsn(opcode: Int, owner: String, name: String, desc: String, itf: Boolean) = opcode match {
+    case INVOKESPECIAL if owner.getInternalClass.isInterface =>
+      println(s"Messing up $owner $name $desc")
+      super.visitMethodInsn(INVOKESTATIC, owner + "helper", name, desc.addParam(owner), itf)
+    case _ =>
+      super.visitMethodInsn(opcode, owner, name, desc, itf)
+  }
+}

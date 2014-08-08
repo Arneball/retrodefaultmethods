@@ -1,13 +1,16 @@
-import org.kohsuke.asm5._
-import org.kohsuke.asm5.Opcodes._
+import java.lang.reflect.{Method, Modifier}
+
 import Implicits._
-import scala.annotation.tailrec
+import org.kohsuke.asm5.Opcodes._
+import org.kohsuke.asm5.Type._
+import org.kohsuke.asm5._
+
 import scala.collection.mutable.ArrayBuffer
 
-case class Mustare(mname: String, mdesc: String, interface: String, signature: String)
+case class MethodContainer(mname: String, mdesc: String, interface: String, signature: String)
 class ClassMustare(visitor: ClassVisitor, byteCodeVersion: Int = V1_6) extends ClassVisitor(ASM5, visitor) {
 
-  var methods: Array[Mustare] = _
+  var methods: List[MethodContainer] = Nil
   var cname: String = _
   type MethodDesc = (String, String)
   var implementedMethods = ArrayBuffer[MethodDesc]()
@@ -19,9 +22,9 @@ class ClassMustare(visitor: ClassVisitor, byteCodeVersion: Int = V1_6) extends C
         i <- interfaces
         cl = i.getInternalClass
         m @ DefaultMethod() <- cl.getMethods
-      } yield Mustare(m.getName, Type.getMethodDescriptor(m), i, signature)
+      } yield MethodContainer(m.getName, Type.getMethodDescriptor(m), i, signature)
       println(s"Default methods: ${defaultMethods.mkString(",")}")
-      methods = defaultMethods
+      methods = defaultMethods.toList
       cname = name;
     }
     super.visit(byteCodeVersion, access, name, signature, superName, interfaces)
@@ -33,33 +36,42 @@ class ClassMustare(visitor: ClassVisitor, byteCodeVersion: Int = V1_6) extends C
     new InterfaceToHelperRewriter(super.visitMethod(access, name, desc, signature, exceptions))
   }
 
-  import org.kohsuke.asm5.Type._
-
   override def visitEnd() = {
-    @tailrec def inner(l: List[Mustare]): Unit = l match {
-      case Nil =>
-      case Mustare(name, desc, interface, signature) :: tail if !implementedMethods.contains(name -> desc) =>
+    def createProxy(l: MethodContainer) = l match {
+      case MethodContainer(name, desc, interface, signature) if !implementedMethods.contains(name -> desc) =>
         val tmp = super.visitMethod(ACC_PUBLIC, name, desc, signature, null)
         tmp.visitVarInsn(ALOAD, 0)
         Type.getArgumentTypes(desc).zipWithIndex.foreach{
-          case (INT_TYPE, i) => tmp.visitVarInsn(ILOAD, i + 1)
-          case (typ, i) => tmp.visitVarInsn(ALOAD, i + 1)
+          case (PrimitiveLoad(instruction), i) => tmp.visitVarInsn(instruction, i + 1) 
+          case (_, i) => tmp.visitVarInsn(ALOAD, i + 1)
         }
         tmp.visitMethodInsn(INVOKESTATIC, interface + "helper", name, desc.addParam(interface))
         Type.getReturnType(desc) match {
-          case VOID_TYPE => tmp.visitInsn(RETURN)
-          case INT_TYPE => tmp.visitInsn(IRETURN)
-            // TODO add others
+          case ReturnIns(ins)  => tmp.visitInsn(ins)
           case otherwise: Type => tmp.visitInsn(ARETURN)
         }
         tmp.visitMaxs(0, 0)
         tmp.visitEnd()
-        inner(tail)
-      case _ :: tail => inner(tail)
+      case _ => // noop
     }
-    methods match {
-      case null => super.visitEnd()
-      case that => inner(that.toList)
-    }
+    methods.foreach{ createProxy }
+    super.visitEnd()
   }
 }
+object DefaultMethod {
+  def unapply(m: Method) = !Modifier.isAbstract(m.getModifiers)
+}
+object InstructorExtractor {
+  val (loadMap, returnMap) = {
+    val types = List(INT_TYPE,  LONG_TYPE, FLOAT_TYPE, DOUBLE_TYPE)
+    val loads = List(ILOAD,     LLOAD,     FLOAD,      DLOAD)
+    val rets  = List(IRETURN,   LRETURN,   FRETURN,    DRETURN)
+    val mkMap = types.zip(_: List[Int]).toMap
+    mkMap(loads) -> mkMap(rets)
+  }
+}
+class InstructorExtractor(m: Map[Type, Int]) {
+  def unapply(f: Type) = m.get(f)
+}
+object PrimitiveLoad extends InstructorExtractor(InstructorExtractor.loadMap)
+object ReturnIns extends InstructorExtractor(InstructorExtractor.returnMap)
