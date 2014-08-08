@@ -2,49 +2,57 @@
  * Created by arneball on 2014-07-29.
  */
 
-import java.io.IOException
-import java.lang.reflect.{Modifier, Method}
+import java.lang.reflect.{Method, Modifier}
 import java.net.{URL, URLClassLoader}
-import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file._
+import java.nio.file.attribute.BasicFileAttributes
 
 import org.kohsuke.asm5._
-
-import scala.annotation.tailrec
-import scala.collection.mutable.ArrayBuffer
-
-object AsmTest extends App{
-  val cp = "/Users/arneball/code/SBT2/kalkon/target/scala-2.11/classes/"
-  val ucl = new URLClassLoader(Array(new URL(s"file://$cp"))) {
-
-  }
-  Files.walkFileTree(Paths.get(cp), new SimpleFileVisitor[Path] {
-    override def visitFileFailed(file: Path, exc: IOException): FileVisitResult = ???
-
-    override def visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult = file.toString.toLowerCase.endsWith("class") match {
-      case true =>
-        println("Found class file " + file)
-        val bytecode = Files.readAllBytes(file)
-        val wr = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES)
-        val stage1 = new InterfaceMustare(wr)
-        val stage2 = new ClassMustare(stage1)
-        val reader = new ClassReader(bytecode).accept(stage2, 0);
-        Files.write(file, wr.toByteArray)
-        FileVisitResult.CONTINUE
-      case that =>
-        FileVisitResult.CONTINUE
+import collection.JavaConversions._
+object AsmTest {
+  lazy val (output: Path, cp: Array[URL], input: Path, bytecodeVersion: Int, ucl: URLClassLoader) = {
+    val List(_input, _output, _cp, _bytecode) = List("inputDir", "outputDir", "classpath", "bytecodeVersion").map{ name =>
+      System.getProperties.getProperty("neger." + name)
     }
+    val byteCodeVersion = _bytecode match {
+      case "1.7" | "7" | "51" => Opcodes.V1_7
+      case "1.6" | "6" | "50" => Opcodes.V1_6
+      case "1.5" | "5" | "49" => Opcodes.V1_5
+      case _ => throw new Exception("BytecodeVersion must be 1.6, 6, 1.7 or 7")
+    }
+    val input = Paths.get(_input)
+    val output = Option(_output).map{ Paths.get(_) }.getOrElse(input)
 
-//    override def preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult = {
-//      FileVisitResult.CONTINUE
-//    }
-//
-//    override def postVisitDirectory(dir: Path, exc: IOException): FileVisitResult = {
-//      FileVisitResult.CONTINUE
-//    }
-  })
+    val cp = _cp.split(System.getProperty("path.separator")).map{ p =>
+      Paths.get(p).toUri.toURL
+    } :+ input.toUri.toURL
+    Implicits.println(s"Input: $input, Output: $output, classpath: ${cp.mkString}")
+    (output, cp, input, byteCodeVersion, new URLClassLoader(cp))
+  }
+
+  def main(args: Array[String]): Unit = {
+    Files.walkFileTree(input, new SimpleFileVisitor[Path] {
+      override def visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult = file.toString.toLowerCase.endsWith("class") match {
+        case true =>
+          println("Found class file " + file)
+          val bytecode = Files.readAllBytes(file)
+          val wr = new ClassWriter(ClassWriter.COMPUTE_FRAMES)
+          val stage1 = new InterfaceMustare(wr, bytecodeVersion)
+          val stage2 = new ClassMustare(stage1, bytecodeVersion)
+          val reader = new ClassReader(bytecode).accept(stage2, 0);
+          val outputFile = output.resolve(input.relativize(file));
+          Files.createDirectories(outputFile.getParent());
+          Files.write(outputFile, wr.toByteArray);
+          FileVisitResult.CONTINUE
+        case that =>
+          FileVisitResult.CONTINUE
+      }
+    })
+  }
 }
+
 object Implicits {
+  def println(str: String) = Predef.println("KALLE " + str)
   val Sig = raw"\((.*)\)(.*)".r
   implicit class StrWr(val str: String) extends AnyVal {
     def addParam(cl: String) = str match {
@@ -53,131 +61,19 @@ object Implicits {
         println(s"Before $str, now $tmp")
         tmp
     }
+    def getInternalClass = AsmTest.ucl.loadClass(str.replace("/", "."))
   }
 }
-import Opcodes._
 import Implicits._
-class InterfaceMustare(classWriter: ClassWriter) extends ClassVisitor(Opcodes.ASM5, classWriter) with Opcodes {
-  private var isInterface = false
-  private lazy val helperClassVisitor = mkHelperClass
-  private var cName: String = _
-  override def visitMethod(access: Int, name: String, desc: String, signature: String, exceptions: Array[String]): MethodVisitor = {
-    val methContcreted = (ACC_ABSTRACT & access) == 0
-    (methContcreted, isInterface) match {
-      case (true, true) =>
-        var mv = super.visitMethod(access | ACC_ABSTRACT, name, desc, signature, exceptions)
-        val tmp = helperClassVisitor.visitMethod(access | ACC_STATIC, name, desc.addParam(cName), signature, exceptions)
-        tmp.visitMaxs(0, 0)
-        new BodyStripper(cName, tmp)
-      case _ =>
-        super.visitMethod(access, name, desc, signature, exceptions)
-    }
-  }
+import org.kohsuke.asm5.Opcodes._
 
-  override def visitEnd() = {
-    Files.write(Paths.get(AsmTest.cp + cName + "helper.class"), helperClassVisitor.toByteArray)
-    helperClassVisitor.visitEnd()
-    super.visitEnd()
-  }
-
-  private def mkHelperClass = {
-    val cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-
-    cw.visit(49,
-      ACC_PUBLIC + ACC_SUPER,
-      cName + "helper",
-      null,
-      "java/lang/Object",
-      null);
-
-    cw.visitSource("Hello.java", null);
-
-    {
-      val mv = cw.visitMethod(ACC_PRIVATE, "<init>", "()V", null, null);
-      mv.visitVarInsn(ALOAD, 0);
-      mv.visitMethodInsn(INVOKESPECIAL,
-        "java/lang/Object",
-        "<init>",
-        "()V");
-      mv.visitInsn(RETURN);
-      mv.visitMaxs(0, 0);
-      mv.visitEnd();
-    }
-    cw
-  }
-
-  override def visit(version: Int, access: Int, name: String, signature: String, superName: String, interfaces: Array[String]) = {
-    isInterface = (access & ACC_INTERFACE) != 0
-    cName = name
-    super.visit(version, access, name, signature, superName, interfaces)
-  }
-}
-// works, strips the body
-class BodyStripper(cname: String, newMethod: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, newMethod) {
-  override def visitEnd() = {
-    visitMaxs(0, 0)
-
-    super.visitEnd()
-  }
-}
-
-class ClassMustare(visitor: ClassVisitor) extends ClassVisitor(Opcodes.ASM5, visitor) {
-  case class Mustare(mname: String, mdesc: String, interface: String, signature: String)
-
-  var methods: Array[Mustare] = _
-  var cname: String = _
-  type MethodDesc = (String, String)
-  var implementedMethods = ArrayBuffer[MethodDesc]()
-
-  override def visit(version: Int, access: Int, name: String, signature: String, superName: String, interfaces: Array[String]) = {
-    val isClass = (access & ACC_INTERFACE) == 0
-    if(isClass) {
-      val defaultMethods = for {
-        i <- interfaces
-        cl = AsmTest.ucl.loadClass(i.replace("/", "."))
-        m @ DefaultMethod() <- cl.getMethods
-      } yield Mustare(m.getName, Type.getMethodDescriptor(m), i, signature)
-      println(s"Default methods: ${defaultMethods.mkString(",")}")
-      methods = defaultMethods
-      cname = name;
-    }
-    super.visit(version, access, name, signature, superName, interfaces)
-  }
-
-  // gotta keep track of overriden default methods
-  override def visitMethod(access: Int, name: String, desc: String, signature: String, exceptions: Array[String]): MethodVisitor = {
-    implementedMethods += name -> desc
-    super.visitMethod(access, name, desc, signature, exceptions)
-  }
-
-  import Type._
-
-  override def visitEnd() = {
-    @tailrec def inner(l: List[Mustare]): Unit = l match {
-      case Nil =>
-      case Mustare(name, desc, interface, signature) :: tail if !implementedMethods.contains(name -> desc) =>
-        val tmp = super.visitMethod(ACC_PUBLIC, name, desc, signature, null)
-        tmp.visitVarInsn(ALOAD, 0)
-        Type.getArgumentTypes(desc).zipWithIndex.foreach{
-          case (INT_TYPE, i) => tmp.visitVarInsn(ILOAD, i + 1)
-          case (typ, i) => tmp.visitVarInsn(ALOAD, i + 1)
-        }
-        tmp.visitMethodInsn(INVOKESTATIC, interface + "helper", name, desc.addParam(interface))
-        Type.getReturnType(desc) match {
-          case VOID_TYPE => tmp.visitInsn(RETURN)
-          case INT_TYPE => tmp.visitInsn(IRETURN)
-            // TODO add others
-          case otherwise: Type => tmp.visitInsn(ARETURN)
-        }
-        tmp.visitMaxs(0, 0)
-        tmp.visitEnd()
-        inner(tail)
-      case _ :: tail => inner(tail)
-    }
-    methods match {
-      case null => super.visitEnd()
-      case that => inner(that.toList)
-    }
+class InterfaceToHelperRewriter(mv: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, mv) {
+  override def visitMethodInsn(opcode: Int, owner: String, name: String, desc: String, itf: Boolean) = opcode match {
+    case INVOKESPECIAL if owner.getInternalClass.isInterface =>
+      println(s"Messing up $owner $name $desc")
+      super.visitMethodInsn(INVOKESTATIC, owner + "helper", name, desc.addParam(owner), itf)
+    case _ =>
+      super.visitMethodInsn(opcode, owner, name, desc, itf)
   }
 }
 
