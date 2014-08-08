@@ -11,10 +11,14 @@ import java.nio.file._
 import org.kohsuke.asm5._
 
 import scala.annotation.tailrec
+import scala.collection.mutable.ArrayBuffer
 
 object AsmTest extends App{
-  val ucl = new URLClassLoader(Array(new URL("file:///tmp/cp/")))
-  Files.walkFileTree(Paths.get("/tmp/cp"), new FileVisitor[Path] {
+  val cp = "/Users/arneball/code/SBT2/kalkon/target/scala-2.11/classes/"
+  val ucl = new URLClassLoader(Array(new URL(s"file://$cp"))) {
+
+  }
+  Files.walkFileTree(Paths.get(cp), new SimpleFileVisitor[Path] {
     override def visitFileFailed(file: Path, exc: IOException): FileVisitResult = ???
 
     override def visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult = file.toString.toLowerCase.endsWith("class") match {
@@ -31,13 +35,13 @@ object AsmTest extends App{
         FileVisitResult.CONTINUE
     }
 
-    override def preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult = {
-      FileVisitResult.CONTINUE
-    }
-
-    override def postVisitDirectory(dir: Path, exc: IOException): FileVisitResult = {
-      FileVisitResult.CONTINUE
-    }
+//    override def preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult = {
+//      FileVisitResult.CONTINUE
+//    }
+//
+//    override def postVisitDirectory(dir: Path, exc: IOException): FileVisitResult = {
+//      FileVisitResult.CONTINUE
+//    }
   })
 }
 object Implicits {
@@ -70,10 +74,10 @@ class InterfaceMustare(classWriter: ClassWriter) extends ClassVisitor(Opcodes.AS
     }
   }
 
-  override def visitEnd = {
-    Files.write(Paths.get(s"/tmp/cp/${cName}helper.class"), helperClassVisitor.toByteArray)
+  override def visitEnd() = {
+    Files.write(Paths.get(AsmTest.cp + cName + "helper.class"), helperClassVisitor.toByteArray)
     helperClassVisitor.visitEnd()
-    super.visitEnd
+    super.visitEnd()
   }
 
   private def mkHelperClass = {
@@ -110,10 +114,10 @@ class InterfaceMustare(classWriter: ClassWriter) extends ClassVisitor(Opcodes.AS
 }
 // works, strips the body
 class BodyStripper(cname: String, newMethod: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, newMethod) {
-  override def visitEnd = {
+  override def visitEnd() = {
     visitMaxs(0, 0)
 
-    super.visitEnd
+    super.visitEnd()
   }
 }
 
@@ -122,12 +126,15 @@ class ClassMustare(visitor: ClassVisitor) extends ClassVisitor(Opcodes.ASM5, vis
 
   var methods: Array[Mustare] = _
   var cname: String = _
+  type MethodDesc = (String, String)
+  var implementedMethods = ArrayBuffer[MethodDesc]()
+
   override def visit(version: Int, access: Int, name: String, signature: String, superName: String, interfaces: Array[String]) = {
     val isClass = (access & ACC_INTERFACE) == 0
     if(isClass) {
       val defaultMethods = for {
         i <- interfaces
-        cl = AsmTest.ucl.loadClass(i)
+        cl = AsmTest.ucl.loadClass(i.replace("/", "."))
         m @ DefaultMethod() <- cl.getMethods
       } yield Mustare(m.getName, Type.getMethodDescriptor(m), i, signature)
       println(s"Default methods: ${defaultMethods.mkString(",")}")
@@ -137,15 +144,18 @@ class ClassMustare(visitor: ClassVisitor) extends ClassVisitor(Opcodes.ASM5, vis
     super.visit(version, access, name, signature, superName, interfaces)
   }
 
-  import Type._
+  // gotta keep track of overriden default methods
   override def visitMethod(access: Int, name: String, desc: String, signature: String, exceptions: Array[String]): MethodVisitor = {
+    implementedMethods += name -> desc
     super.visitMethod(access, name, desc, signature, exceptions)
   }
 
-  override def visitEnd = {
+  import Type._
+
+  override def visitEnd() = {
     @tailrec def inner(l: List[Mustare]): Unit = l match {
       case Nil =>
-      case Mustare(name, desc, interface, signature) :: tail =>
+      case Mustare(name, desc, interface, signature) :: tail if !implementedMethods.contains(name -> desc) =>
         val tmp = super.visitMethod(ACC_PUBLIC, name, desc, signature, null)
         tmp.visitVarInsn(ALOAD, 0)
         Type.getArgumentTypes(desc).zipWithIndex.foreach{
@@ -162,24 +172,15 @@ class ClassMustare(visitor: ClassVisitor) extends ClassVisitor(Opcodes.ASM5, vis
         tmp.visitMaxs(0, 0)
         tmp.visitEnd()
         inner(tail)
+      case _ :: tail => inner(tail)
     }
     methods match {
-      case null => super.visitEnd
+      case null => super.visitEnd()
       case that => inner(that.toList)
     }
   }
 }
 
-class ConcreteMaker(cv: MethodVisitor) extends MethodVisitor(Opcodes.ASM5, cv) {
-
-}
-
 object DefaultMethod {
   def unapply(m: Method) = !Modifier.isAbstract(m.getModifiers)
 }
-
-case class Extractor(t: Type) {
-  def unapply(i: Type) = t eq i
-}
-object ILoad extends Extractor(Type.INT_TYPE)
-object DLoad extends Extractor(Type.DOUBLE_TYPE)
