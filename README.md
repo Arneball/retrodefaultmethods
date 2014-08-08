@@ -73,7 +73,7 @@ class C implements I {
     Code:
        0: aload_0       
        1: invokestatic  #22                 // Method Ihelper.kalle:(LI;)V
-       4: areturn       
+       4: return       
 }
 Compiled from "Hello.java"
 public class Ihelper {
